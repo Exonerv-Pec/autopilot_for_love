@@ -46,6 +46,7 @@ class Game:
         self.turn_asked = 0.0  # degrees of yaw the mouse was moved to turn the view, all told
         self.keys = dict(self.engine.keys)
         self.writes = []  # state the harness changed directly (reported: only for verification setups)
+        self.restarts = 0  # times the level started over (Session.started_over tells the agent)
         # The level the run plays when it isn't the one open in the editor (autopilot/levels.py): every restart
         # starts it over. level_info: how it was chosen (a levels.Level, for the agent's briefing)
         self.level = None
@@ -262,7 +263,9 @@ class Game:
         return (self.request("ui") or {}).get("elements", [])
 
     def ui_act(self, **args):
-        return self.request("ui_act", args)
+        out = self.request("ui_act", args)
+        self.log("input", key="ui", mode=args.get("action"), value=args)
+        return out
 
     def pointer(self, screen_x=None, screen_y=None, world=None, object=None):
         """Put the mouse at a place on the game's view without moving it across (no mouse movement on the way): a
@@ -366,8 +369,10 @@ class Game:
         if abs(right) >= 0.5:
             self.post("key", {"key": "MouseX", "mode": "press", "value": round(right, 1)})
             self.turn_asked += abs(right * (self.look["x"] or 0.0))  # degrees of yaw (the runtime checks they come)
+            self.log("input", key="MouseX", mode="press", value=round(right, 1))
         if abs(up) >= 0.5:
             self.post("key", {"key": "MouseY", "mode": "press", "value": round(up, 1)})
+            self.log("input", key="MouseY", mode="press", value=round(up, 1))
 
     def turn(self, right_deg=0.0, up_deg=0.0):
         """Turn the view by about these degrees with the mouse (needs calibrate_look(); open loop)."""
@@ -426,6 +431,7 @@ class Game:
         if map:
             args["map"] = map
         self.request("session", args, timeout=60)
+        self.restarts += 1
         self._ctx = None
         deadline = time.monotonic() + wait_for_pawn
         while time.monotonic() < deadline:
