@@ -307,7 +307,9 @@ do
   end
 end
 
--- The texts the game draws (love.graphics.print / printf), where they land on screen: `screen`.
+-- The texts the game draws (love.graphics.print / printf), where they land on screen: `screen`. Each piece is kept
+-- with its place and width on screen; screen_texts() joins the pieces that sit side by side on a line (a terminal-like
+-- game that prints one glyph at a time reads as its words, not as letters).
 do
   local g = love.graphics
   local print_, printf_ = g.print, g.printf
@@ -321,21 +323,95 @@ do
     end
     return tostring(t)
   end
-  local function note(t, x, y)
-    if not S.active then return end
-    local text = text_of(t)
+  -- one line of text at (x, y) in the current transform, `width` wide in it (nil: as the font measures it)
+  local function note(text, font, x, y, width)
     if text:match("^%s*$") then return end
-    local sx, sy = g.transformPoint(tonumber(x) or 0, tonumber(y) or 0)
-    S.texts_now[string.format("Text@%d,%d", math.floor(sx + 0.5), math.floor(sy + 0.5))] = text
+    font = font or g.getFont()
+    local ok, w = pcall(font.getWidth, font, text)
+    w = width or (ok and w or 0)
+    local h = font:getHeight()
+    local sx, sy = g.transformPoint(x, y)
+    local ex, ey = g.transformPoint(x + w, y + h)
+    -- (a glyph cell, as a terminal lays text out: the font's widest common glyph, on screen)
+    local cx = g.transformPoint(x + font:getWidth("M"), y)
+    S.texts_now[#S.texts_now + 1] = {text = text, x = sx, y = sy, ex = ex, h = math.max(1, ey - sy), n = #text,
+      cell = math.max(1, cx - sx)}
   end
-  g.print = function(t, x, y, ...)
-    if type(x) == "userdata" then note(t, 0, 0) else note(t, x, y) end  -- (print(text, font, x, y) too)
-    return print_(t, x, y, ...)
+  local function on_print(t, font, x, y)
+    if not S.active then return end
+    x, y = tonumber(x) or 0, tonumber(y) or 0
+    local line = 0
+    font = font or g.getFont()
+    for piece in (text_of(t) .. "\n"):gmatch("(.-)\n") do
+      note(piece, font, x, y + line * font:getHeight() * font:getLineHeight())
+      line = line + 1
+    end
   end
-  g.printf = function(t, x, y, ...)
-    if type(x) == "userdata" then note(t, y, select(1, ...)) else note(t, x, y) end
-    return printf_(t, x, y, ...)
+  local function on_printf(t, font, x, y, limit, align)
+    if not S.active then return end
+    x, y, limit = tonumber(x) or 0, tonumber(y) or 0, tonumber(limit) or 0
+    font = font or g.getFont()
+    local ok, _, lines = pcall(font.getWrap, font, text_of(t), limit)
+    if not ok then return end
+    for i, piece in ipairs(lines) do
+      local w = font:getWidth(piece)
+      local lx = x
+      if align == "center" then lx = x + (limit - w) / 2 elseif align == "right" then lx = x + limit - w end
+      note(piece, font, lx, y + (i - 1) * font:getHeight() * font:getLineHeight(), w)
+    end
   end
+  -- (print(text, x, y, ...) and print(text, font, x, y, ...); printf(text, x, y, limit, align, ...) and with a font)
+  g.print = function(t, a, b, c, ...)
+    if type(a) == "userdata" then on_print(t, a, b, c) else on_print(t, nil, a, b) end
+    return print_(t, a, b, c, ...)
+  end
+  g.printf = function(t, a, b, c, d, e, ...)
+    if type(a) == "userdata" then on_printf(t, a, b, c, d, e) else on_printf(t, nil, a, b, c, d) end
+    return printf_(t, a, b, c, d, e, ...)
+  end
+end
+
+-- The texts of the last frame drawn, as {"Text@x,y" = text}: pieces on one line (their tops within a quarter of their
+-- height) that follow each other closely are one text. Glyphs drawn one at a time are laid out in cells, as a terminal
+-- does: one cell from the glyph before is the next letter, each cell more a space. Longer pieces are joined when less
+-- than two cells apart, with a space between. A piece drawn over the one before it (a shadow, an outline) is dropped.
+local function screen_texts(pieces)
+  local sorted = {}
+  for i, p in ipairs(pieces) do sorted[i] = p end
+  table.sort(sorted, function(a, b)
+    if math.abs(a.y - b.y) > math.min(a.h, b.h) / 4 then return a.y < b.y end
+    return a.x < b.x
+  end)
+  local out, run = {}, nil
+  local function close()
+    if run then
+      local key = string.format("Text@%d,%d", math.floor(run.x + 0.5), math.floor(run.y + 0.5))
+      out[key] = table.concat(run.parts)
+    end
+  end
+  for _, p in ipairs(sorted) do
+    local same_line = run and math.abs(p.y - run.y) <= math.min(p.h, run.h) / 4
+    local cell = p.cell
+    if same_line and p.x < run.last_x + cell / 2 and p.text == run.last_text then
+      -- (the same text over itself, a pixel or two off: a shadow or an outline)
+    elseif same_line and run.last_n == 1 and p.n == 1 and p.x - run.last_x <= 3.5 * cell then
+      local cells = math.floor((p.x - run.last_x) / cell + 0.5)
+      if cells > 1 then run.parts[#run.parts + 1] = string.rep(" ", cells - 1) end
+      run.parts[#run.parts + 1] = p.text
+    elseif same_line and p.x - run.ex <= 2 * cell then
+      if p.x - run.ex > cell / 4 then run.parts[#run.parts + 1] = " " end
+      run.parts[#run.parts + 1] = p.text
+    else
+      close()
+      run = {x = p.x, y = p.y, h = p.h, ex = p.ex, parts = {p.text}}
+    end
+    if run.parts[#run.parts] == p.text or #run.parts == 1 then
+      run.last_x, run.last_n, run.last_text = p.x, p.n, p.text
+      run.ex = math.max(run.ex, p.ex)
+    end
+  end
+  close()
+  return out
 end
 
 -- Fixed time steps (`timestep`): every frame's dt is 1/fps, whatever the wall time.
@@ -379,6 +455,14 @@ local function input_caps()
     })}
 end
 
+-- The names of main.lua's locals the module searches (/@local/<name>), for the agent to start from.
+local function locals_of_main()
+  local names = {}
+  for name in pairs(world.locals()) do names[#names + 1] = name end
+  table.sort(names)
+  return json.array(names)
+end
+
 local function context()
   local p = world.player()
   local cam = world.camera_object()
@@ -386,7 +470,7 @@ local function context()
     input_subsystem = "", camera_manager = cam and world.path_of(cam) or "", camera = cam and world.path_of(cam) or "",
     dimension = "2d", game_name = project_name(), host = "game", engine = "love", session_running = true,
     paused = S.paused, game_time = t_value(), project_dir = project_dir(), controls = controls(),
-    input = input_caps(), net = {mode = "standalone"}, player_found_by = world.found_by}
+    input = input_caps(), net = {mode = "standalone"}, player_found_by = world.found_by, locals = locals_of_main()}
 end
 
 local function session_op(id, a)
@@ -572,7 +656,7 @@ local OPS = {
   view = function(_, a) return world.view(a) end,
   screen = function()
     local texts = json.object({})
-    for k, v in pairs(S.texts) do texts[k] = v end
+    for k, v in pairs(screen_texts(S.texts)) do texts[k] = v end
     return true, {texts = texts}
   end,
   ui = function() return true, {elements = json.array({})} end,
@@ -857,7 +941,7 @@ local function frame(step)
     result = step()
   end
   if love.update == noop then love.update = real_update end
-  if next(S.texts_now) then S.texts = S.texts_now end
+  if #S.texts_now > 0 then S.texts = S.texts_now end
   if not S.paused then S.game_time = S.game_time + (S.fixed_dt or love.timer.getDelta()) end
   if run_using_game(t) then detect(real_dt) end
   if S.active and t - S.heartbeat_at >= 1 then

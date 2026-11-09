@@ -1,6 +1,8 @@
 -- Coin Field: the LÖVE module's test game. A square walks a field (arrows or W/A/S/D), takes coins (+10 each), and a
 -- slime patrols between two posts. Space jumps (a hop: the square rises and lands). E rings the bell, whose script has
--- a planted bug (it calls a method on nil: a log_error for the detectors). The HUD shows the score.
+-- a planted bug (it calls a method on nil: a log_error for the detectors). The HUD shows the score, and the lives the
+-- way a terminal-styled game does it: one glyph at a time. Some of its state is in main.lua's locals, as many games
+-- keep it: a flock of birds (in a "_private" field) and a sprite atlas's frames (data with an x and a y, not things).
 
 require("autopilot")
 
@@ -11,11 +13,15 @@ slimes = {}
 bell = {x = 600, y = 100, w = 24, h = 24, rung = 0}
 score = 0
 gameState = {level = 1, paused = false}
+local flock = {_birds = {}}
+local atlas = {}
+for i = 1, 200 do atlas[i] = {x = (i % 20) * 40, y = math.floor(i / 20) * 40, w = 40, h = 40} end
 
 local function reset()
   coins = {}
   for i = 1, 5 do coins[i] = {x = 160 + i * 80, y = 316, r = 8, type = "Coin", value = 10} end
   slimes = {{x = 500, y = 316, r = 14, kind = "Slime", vx = 60, left = 420, right = 700}}
+  for i = 1, 3 do flock._birds[i] = {x = 100 + i * 150, y = 60, radius = 6, kind = "Bird", vx = 40} end
 end
 
 function love.load()
@@ -54,6 +60,7 @@ function love.update(dt)
     s.x = s.x + s.vx * dt
     if s.x > s.right or s.x < s.left then s.vx = -s.vx end
   end
+  for _, b in ipairs(flock._birds) do b.x = (b.x + b.vx * dt) % 800 end
 end
 
 function love.keypressed(key)
@@ -79,4 +86,16 @@ function love.draw()
   love.graphics.setColor(1, 1, 1)
   love.graphics.rectangle("fill", player.x, player.y, player.w, player.h)
   love.graphics.print("Score: " .. score, 10, 10)
+  local glyph = love.graphics.getFont():getWidth("M")
+  local lives = "Lives: 3"
+  for i = 1, #lives do
+    local ch = lives:sub(i, i)
+    if ch ~= " " then love.graphics.print(ch, 10 + (i - 1) * glyph, 30) end
+  end
+  love.graphics.setColor(0, 0, 0)
+  love.graphics.print("Coin Field", 361, 11)  -- (a shadow, under the title)
+  love.graphics.setColor(1, 1, 1)
+  love.graphics.print("Coin Field", 360, 10)
+  for _, b in ipairs(flock._birds) do love.graphics.circle("fill", b.x, b.y, b.radius) end
+  local _ = atlas[1]  -- (the atlas is one of love.draw's locals, as a sprite batch's frames would be)
 end

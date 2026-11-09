@@ -110,12 +110,30 @@ def run(c, link, project):
     c.check("movement from the player's fields", m.get("walk_speed") == 180 and m.get("jump_z") == 420
             and m.get("gravity") == 1200 and m.get("half_height") == 16, str(m))
 
+    # main.lua's locals (the callbacks' upvalues), a "_private" field, and data with an x and a y
+    c.check("context: main.lua's locals", {"flock", "atlas"} <= set(ctx.get("locals", [])), str(ctx.get("locals")))
+    birds = game.actors("bird")
+    c.check("things in main.lua's locals", birds == [f"/@local/flock/_birds/{i}" for i in (1, 2, 3)], str(birds))
+    c.check("a local's thing by path", game.loc("/@local/flock/_birds/2") == Vec(400, 0, -60)
+            or abs(game.loc("/@local/flock/_birds/2").z + 60) < 1e-6, str(game.loc("/@local/flock/_birds/2")))
+    things = game.all_actors()
+    first_data = min(i for i, t in enumerate(things) if t.startswith("/@local/atlas/"))
+    c.check("live things before data", all(things.index(t) < first_data for t in ("/player", "/slimes/1")
+                                                 + tuple(birds)), str(things[:12]))
+    c.check("data with an x and a y is still found", len([t for t in things if t.startswith("/@local/atlas/")]) == 200)
+
     # what is on screen
     texts = wait_for(lambda: game.screen())
     c.check("the HUD's text", "Score: 0" in texts.values(), str(texts))
+    c.check("glyphs drawn one by one read as their text", "Lives: 3" in texts.values(), str(texts))
+    c.check("a shadow isn't the text twice", list(texts.values()).count("Coin Field") == 1, str(texts))
     view = game.view()
     names = [v["path"] for v in view.get("visible", [])]
-    c.check("view: what is on screen, nearest first", names[:1] == ["/coins/1"] and "/player" not in names, str(names))
+    props = [v["path"] for v in view.get("visible", []) if v.get("prop")]
+    c.check("view: the live things first, then the props, nearest first", "/player" not in names
+            and names.index("/slimes/1") < names.index("/coins/1") and props[:1] == ["/coins/1"], str(names))
+    c.check("view: a sprite atlas's frames aren't on screen", not any(n.startswith("/@local/atlas/") for n in names)
+            and "/@local/flock/_birds/1" in names, str(names))
 
     # keys
     x0 = game.loc("/player").x

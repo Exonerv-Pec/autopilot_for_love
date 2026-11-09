@@ -68,10 +68,13 @@ by itself).
 
 ## Helping it find your things (optional)
 
-LÖVE has no scene tree, so the module looks for the game's things itself: tables reachable from the globals that have
-a place (numeric `x` and `y`, a `pos` / `position` table, or a love.physics body), the bodies of the physics worlds
-the game makes, and a global `player` (or `hero`, `ship`) for the player. Most small games need nothing more. When
-yours keeps its things in locals, or the guess is wrong, tell it:
+LÖVE has no scene tree, so the module looks for the game's things itself: tables that have a place (numeric `x` and
+`y`, a `pos` / `position` table, or a love.physics body), reachable from the globals or from main.lua's locals that
+the `love.*` callbacks use (`local state, ui = ...`: found as `/@local/state/...`), the bodies of the physics worlds
+the game makes, and a global `player` (or `hero`, `ship`, or a thing whose class or faction says hero or player) for
+the player. Tables with a life of their own (`hp`, `alive`, `state`, a velocity) come first; the rest (a coin, but
+also a sprite's rectangle) after them. Most games need nothing more. When yours keeps its things in a module's locals,
+or the guess is wrong, tell it:
 
 ```lua
 local autopilot = require("autopilot")
@@ -90,15 +93,15 @@ The wire protocol is the same for every engine (`autopilot/bridge.py`). What is 
 
 | Request | In LÖVE |
 |---|---|
-| `context` | `character`: the player's path; `dimension` `2d`; `engine` `love`; `project_dir`: the game's folder; `controls`: the keys the game's Lua reads (`love.keyboard.isDown("a")`, `key == "space"`), as LÖVE names them, with the agent's names. `{"player": path}` makes that thing the player. |
+| `context` | `character`: the player's path; `dimension` `2d`; `engine` `love`; `project_dir`: the game's folder; `locals`: main.lua's locals that are searched; `controls`: the keys the game's Lua reads (`love.keyboard.isDown("a")`, `key == "space"`), as LÖVE names them, with the agent's names. `{"player": path}` makes that thing the player. |
 | `session` | `restart` starts the whole game over (`love.event.quit("restart")`: every global and module, from `main.lua`): the connection closes as coming back (1012) and the new game answers the request on the same session. No scenes: a `map` is a 404. |
-| `find`, `transforms`, `pose`, `movement`, `view`, `watch` | Over the things described above. Paths are keys from the global table (`/player`, `/enemies/3`); a class is what `autopilot.track` named, a class's name (middleclass), a `type`/`kind`/`tag` field, a metatable's `__name`, or the table a thing is in. A table with a width (`w`, `h`) has its top left at `x`, `y`; a circle (`r`, `radius`) or a point its middle. `movement` reads the player's `speed`, `jumpForce` / `jumpHeight` and `gravity` fields (or its physics world's gravity). |
+| `find`, `transforms`, `pose`, `movement`, `view`, `watch` | Over the things described above, the live ones first (`view` marks the others `prop`, and leaves out the members of big collections of data). Paths are keys from the global table (`/player`, `/enemies/3`) or from main.lua's locals (`/@local/game/...`); a class is what `autopilot.track` named, a class's name (middleclass), a `type`/`kind`/`tag` field, a metatable's `__name`, or the table a thing is in. A table with a width (`w`, `h`) has its top left at `x`, `y`; a circle (`r`, `radius`) or a point its middle. `movement` reads the player's `speed`, `jumpForce` / `jumpHeight` and `gravity` fields (or its physics world's gravity). |
 | `rc` | Any Lua value by path: fields (nested with `.`), `position` (a thing's place), function calls with parameters by name (from the function's definition; a first parameter `self` makes it a method), `describe` (fields and functions, a class's methods too). |
 | `key` | Unreal key names or LÖVE's, delivered both as events (`love.keypressed`, `love.keyreleased`, `love.textinput`, `love.mousepressed`...) and as state (`love.keyboard.isDown`, `isScancodeDown`, `love.mouse.isDown`). A press stays down 0.05 s and 2 frames. Holds are leased as in the other engines; a hold with `seconds` lets go after that much game time. |
 | `input` | An error: LÖVE has no input actions. |
 | `move` | `keys` (the default): W/A/S/D, or the arrows when the game's code doesn't read W/A/S/D, toward the direction; `controller`: the player's place moved directly at its walk speed. |
 | `pointer` | The mouse at a place on screen, a kit point or a thing: `love.mouse.getPosition` reports it and a `love.mousemoved` comes. The real cursor never moves. |
-| `screen` | What the game drew last frame with `love.graphics.print` / `printf`, keyed by where it landed on screen (`Text@10,10`). |
+| `screen` | What the game drew last frame with `love.graphics.print` / `printf`, keyed by where it landed on screen (`Text@10,10`). Pieces side by side on a line are one text (glyphs a terminal-styled game prints one at a time read as words; a shadow isn't the text twice). |
 | `ui`, `ui_act` | No controls (`ui` is empty, `ui_act` a 404): a LÖVE game draws its own. |
 | `pause` | The game's `love.update` isn't called (drawing and the module go on). |
 | `timestep` | `fixed`: every frame's dt is 1/`fps` (`love.timer.step`). |
@@ -132,7 +135,8 @@ with playtest arguments.
 ### Running the tests
 
 `tests/live.py` starts LÖVE on the test game, **Coin Field** (`tests/game/`: a square walking a field, coins, a
-patrolling slime, a bell with a planted bug, a HUD), against the brain's own bridge and kit: every op the brain needs,
+patrolling slime, a bell with a planted bug, a HUD with text printed glyph by glyph, birds and a sprite atlas kept in
+main.lua's locals), against the brain's own bridge and kit: every op the brain needs,
 the things and the player, the HUD's text, keys and `move`, `rc`, the codex, the planted bug as a `log_error`, a still
 and a recording (PNGs from the game, a JPEG and an MP4 in the brain), a restart on the same session, and command-line
 runs against a stand-in brain (the hello's run, the report files, exit codes 2 and 1). From the repository root, with

@@ -4,8 +4,9 @@
 --   - what the game names itself: autopilot.track(obj, class), autopilot.player(obj), autopilot.camera(obj or fn);
 --   - the bodies of love.physics worlds (their userData table when they have one);
 --   - any table reachable from the globals with numeric x and y (enemies[3], world.entities[12]...).
--- A thing's path is its keys from the global table, "/"-separated: /player, /enemies/3. A thing reached no other way
--- has a path of its own: /@track/2, /@body/5.
+-- A thing's path is its keys from the global table, "/"-separated: /player, /enemies/3. Many games keep their state
+-- in main.lua's locals instead (local state, world...): those the love.* callbacks use are searched too, under
+-- /@local/<name> (/@local/state/level/entities/2). A thing reached no other way has a path of its own: /@track/2, /@body/5.
 --
 -- Places are LÖVE's world pixels (x right, y down) given in the kit frame: (X, Y, Z) = (x, 0, -y).
 
@@ -16,9 +17,14 @@ local world = {}
 local SKIP_GLOBALS = {_G = true, package = true, love = true, string = true, math = true, table = true, io = true,
   os = true, debug = true, coroutine = true, bit = true, jit = true, ffi = true, socket = true, utf8 = true,
   arg = true, _AUTOPILOT = true}
-local MAX_DEPTH = 5
+local MAX_DEPTH = 8
 local MAX_ENTRIES = 4000  -- per table walked: past that, a table is data, not things
 local MAX_THINGS = 10000
+local MAX_VISIT = 60000   -- tables walked in all, a search (the shallowest first)
+local COLLECTION = 8      -- a table with more entries than this is a collection (its members one kind of thing)
+-- LÖVE's callbacks, whose locals (upvalues) are searched too
+local CALLBACKS = {"load", "update", "draw", "keypressed", "keyreleased", "textinput", "mousepressed",
+  "mousereleased", "mousemoved", "wheelmoved", "resize", "focus", "quit", "gamepadpressed", "joystickpressed"}
 
 world.tracked = {}       -- obj -> {class = ..., n = ...}
 world.tracked_list = {}  -- in order
@@ -111,7 +117,7 @@ local function class_name(t, key)
   local c = rawget(t, "class")
   if type(c) == "table" and type(rawget(c, "name")) == "string" then names[#names + 1] = c.name end  -- middleclass
   if type(c) == "string" then names[#names + 1] = c end
-  for _, k in ipairs({"type", "kind", "tag", "className", "classname"}) do
+  for _, k in ipairs({"type", "kind", "tag", "className", "classname", "faction", "team", "side"}) do
     local v = rawget(t, k)
     if type(v) == "string" and v ~= "" then names[#names + 1] = v end
   end
@@ -133,24 +139,64 @@ end
 
 -- the things ------------------------------------------------------------------------------------------------------
 
+-- The tables main.lua's locals hold, as the love.* callbacks see them (their upvalues): {name = table}. The first
+-- callback to name a local wins; locals that aren't tables (a number, a function) aren't roots.
+function world.locals()
+  local out = {}
+  for _, cb in ipairs(CALLBACKS) do
+    local f = rawget(love, cb)
+    if type(f) == "function" then
+      local i = 1
+      while true do
+        local name, value = debug.getupvalue(f, i)
+        if not name then break end
+        if type(value) == "table" and name ~= "" and name:sub(1, 1) ~= "_" and out[name] == nil
+            and value ~= _G and value ~= love and not (name:match("^[%u_]+$")) then
+          out[name] = value
+        end
+        i = i + 1
+      end
+    end
+  end
+  return out
+end
+
 world._cache, world._cache_frame = nil, -1
 world.frame = 0
 
-local function add(out, seen, t, path, key)
-  if seen[t] or #out.list >= MAX_THINGS then return end
+-- Whether a table looks alive (a game object, not data that happens to have x and y: a map marker, a sprite's
+-- rectangle): it has a life (hp, health, alive, dead, state), a velocity, or a physics body, or the game named it.
+local LIFE = {"hp", "HP", "health", "life", "alive", "dead", "isDead", "state", "vx", "vy", "dx", "dy", "velocity",
+  "vel", "speed", "body", "collider"}
+local function alive_like(t, place)
+  if place.body or world.tracked[t] then return true end
+  for _, k in ipairs(LIFE) do
+    if rawget(t, k) ~= nil then return true end
+  end
+  return false
+end
+
+local MAX_DATA = 2000  -- things that don't look alive, kept a search (live ones first, up to MAX_THINGS)
+
+local function add(out, seen, t, path, key, pattern)
+  if seen[t] then return end
   local place = world.place(t)
   if not place then return end
+  local live = alive_like(t, place)
+  if live and #out.live >= MAX_THINGS or not live and #out.data >= MAX_DATA then return end
   seen[t] = true
-  local thing = {obj = t, path = path, classes = class_name(t, key), name = tostring(key or path:match("[^/]+$"))}
-  out.list[#out.list + 1] = thing
+  local thing = {obj = t, path = path, classes = class_name(t, key), name = tostring(key or path:match("[^/]+$")),
+    live = live, collection = pattern or path}
+  if live then out.live[#out.live + 1] = thing else out.data[#out.data + 1] = thing end
   out.by_path[path] = thing
   out.by_obj[t] = thing
 end
 
--- Every thing now, with paths: {list, by_path, by_obj}. Found once a frame at most.
+-- Every thing now, with paths: {list (the live ones first), live, data, by_path, by_obj}. Found once a frame at
+-- most.
 function world.things()
   if world._cache and world._cache_frame == world.frame then return world._cache end
-  local out = {list = {}, by_path = {}, by_obj = {}}
+  local out = {list = {}, live = {}, data = {}, by_path = {}, by_obj = {}}
   local seen = {}
   local cam = world.camera_object()
   if cam then seen[cam] = true end
@@ -159,28 +205,42 @@ function world.things()
   local queue = {}
   for k, v in pairs(_G) do
     if type(k) == "string" and type(v) == "table" and not SKIP_GLOBALS[k] and k:sub(1, 1) ~= "_" then
-      queue[#queue + 1] = {v, "/" .. k, k, 1}
+      queue[#queue + 1] = {v, "/" .. k, k, 1, "/" .. k}
     end
   end
+  local roots = {}
+  for name, t in pairs(world.locals()) do roots[#roots + 1] = {t, "/@local/" .. name, name, 1, "/@local/" .. name} end
+  table.sort(roots, function(a, b) return a[2] < b[2] end)
   table.sort(queue, function(a, b) return a[2] < b[2] end)
+  for _, r in ipairs(roots) do queue[#queue + 1] = r end
   local qi = 1
-  while qi <= #queue do
-    local t, path, key, depth = queue[qi][1], queue[qi][2], queue[qi][3], queue[qi][4]
+  local walked = 0
+  while qi <= #queue and walked < MAX_VISIT do
+    local t, path, key, depth, pattern = queue[qi][1], queue[qi][2], queue[qi][3], queue[qi][4], queue[qi][5]
     qi = qi + 1
     if not visited[t] then
       visited[t] = true
-      add(out, seen, t, path, key)
+      walked = walked + 1
+      add(out, seen, t, path, key, pattern)
       if depth < MAX_DEPTH then
         local n = 0
         local parent_key = key
+        -- a table of many entries (an array, or a map by id) is a collection: its members share one pattern
+        local many = 0
+        for _ in pairs(t) do
+          many = many + 1
+          if many > COLLECTION then break end
+        end
         for k, v in pairs(t) do
           n = n + 1
           if n > MAX_ENTRIES then break end
           if type(v) == "table" and not visited[v] and (type(k) == "string" or type(k) == "number") then
             local ks = tostring(k)
-            if ks:sub(1, 1) ~= "_" then
+            if ks:sub(1, 2) ~= "__" then  -- (a "_private" field is often the state itself: _items, _list)
               -- an array member is named by its array (enemies/3 is an "enemies" thing)
-              queue[#queue + 1] = {v, path .. "/" .. ks, type(k) == "number" and parent_key or ks, depth + 1}
+              local member = (type(k) == "number" or many > COLLECTION) and "*" or ks
+              queue[#queue + 1] = {v, path .. "/" .. ks, type(k) == "number" and parent_key or ks, depth + 1,
+                pattern .. "/" .. member}
             end
           end
         end
@@ -205,6 +265,8 @@ function world.things()
       end
     end
   end
+  for _, th in ipairs(out.live) do out.list[#out.list + 1] = th end
+  for _, th in ipairs(out.data) do out.list[#out.list + 1] = th end
   world._cache, world._cache_frame = out, world.frame
   return out
 end
@@ -216,7 +278,14 @@ function world.resolve(path)
   local th = world.things().by_path[path]
   if th then return th.obj end
   local cur = _G
-  for part in path:gmatch("[^/%.]+") do
+  local rest = path
+  local name, after = path:match("^/?@local/([^/%.]+)(.*)$")
+  if name then
+    cur = world.locals()[name]
+    if cur == nil then return nil end
+    rest = after
+  end
+  for part in rest:gmatch("[^/%.]+") do
     if type(cur) ~= "table" and type(cur) ~= "userdata" then return nil end
     local nxt
     local ok = pcall(function() nxt = cur[part] end)
@@ -245,7 +314,7 @@ function world.player()
     local p = rawget(_G, k)
     if world.place(p) then world.found_by = "the global " .. k return p end
   end
-  for _, th in ipairs(world.things().list) do
+  for _, th in ipairs(world.things().live) do
     for _, c in ipairs(th.classes) do
       local l = c:lower()
       if l == "player" or l == "hero" or l:find("player", 1, true) then
@@ -476,19 +545,41 @@ function world.view(args)
     for _, x in ipairs(args.only) do only[tostring(x)] = true end
   end
   local out = {}
-  for _, th in ipairs(world.things().list) do
+  local all = world.things()
+  local function inside(pl)
+    return pl.x + pl.w / 2 >= v.x and pl.x - pl.w / 2 <= v.x + v.w and pl.y + pl.h / 2 >= v.y
+      and pl.y - pl.h / 2 <= v.y + v.h
+  end
+  -- The live things, and the others (no life of their own: a coin, a door) from collections with only a few of them
+  -- in the view. A collection is the things whose paths match once each table of many entries is a "*" (/coins/*,
+  -- /maps/*/markers/*, /items/*/icon): one of hundreds is data with an x and a y (a sprite atlas's frames, every
+  -- item's icon rectangle, the maps' markers), nothing on screen.
+  local shown = {}
+  for _, th in ipairs(all.live) do shown[#shown + 1] = th end
+  local groups, order = {}, {}
+  for _, th in ipairs(all.data) do
+    if inside(world.place(th.obj)) then
+      local g = th.collection
+      if not groups[g] then groups[g], order[#order + 1] = {}, g end
+      table.insert(groups[g], th)
+    end
+  end
+  for _, g in ipairs(order) do
+    if #groups[g] <= 32 then
+      for _, th in ipairs(groups[g]) do shown[#shown + 1] = th end
+    end
+  end
+  for _, th in ipairs(shown) do
     local t = th.obj
     if t ~= p and (not only or only[th.name] or only[th.path]) then
       local pl = world.place(t)
-      local inside = pl.x + pl.w / 2 >= v.x and pl.x - pl.w / 2 <= v.x + v.w and pl.y + pl.h / 2 >= v.y
-        and pl.y - pl.h / 2 <= v.y + v.h
       local d = math.sqrt((pl.x - ox) ^ 2 + (pl.y - oy) ^ 2)
-      if inside and d <= max_d and rawget(t, "visible") ~= false then
+      if inside(pl) and d <= max_d and rawget(t, "visible") ~= false then
         local sx, sy = world.to_screen(pl.x, pl.y)
         local vx, vy = world.velocity(t, pl)
         local item = {name = th.name, path = th.path, class = th.classes[1], center = world.kit(pl.x, pl.y),
           size = {X = r2(pl.w), Y = 0, Z = r2(pl.h)}, distance = r2(d), screen_x = r2(sx), screen_y = r2(sy),
-          speed = r2(math.sqrt(vx * vx + vy * vy))}
+          speed = r2(math.sqrt(vx * vx + vy * vy)), live = th.live}
         if pl.x - pl.w / 2 < v.x or pl.x + pl.w / 2 > v.x + v.w or pl.y - pl.h / 2 < v.y or pl.y + pl.h / 2 > v.y + v.h then
           item.partly_in_view = true
         end
@@ -496,7 +587,15 @@ function world.view(args)
       end
     end
   end
-  table.sort(out, function(a, b) return a.distance < b.distance end)
+  -- the live things first, nearest first; then the others, nearest first
+  table.sort(out, function(a, b)
+    if a.live ~= b.live then return a.live end
+    return a.distance < b.distance
+  end)
+  for _, item in ipairs(out) do
+    if not item.live then item.prop = true end  -- (no life of its own: a coin, a door, a marker)
+    item.live = nil
+  end
   while #out > max_count do table.remove(out) end
   local body = json.object({})
   if p then

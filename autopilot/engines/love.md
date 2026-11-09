@@ -2,11 +2,17 @@
 ## The engine: LÖVE
 
 - **No scene tree.** A LÖVE game's things are its own Lua tables that have a place (numeric `x` and `y`, a
-  `pos`/`position` table, or a love.physics body), named by their keys from the global table: `/player`,
-  `/enemies/3`, `/world/entities/12`. `game.name_of(path)` is the last part (`3`). Things the game names itself
-  (`autopilot.track(obj, class)`) or that only a physics body reaches have paths of their own (`/@track/2`,
-  `/@body/5`). A table met under several keys is named by its shortest path. Locals of a file (`local enemies = {}`)
-  aren't reachable from the globals: read the code, and use what the module finds.
+  `pos`/`position` table, or a love.physics body), named by their keys: from the global table (`/player`,
+  `/enemies/3`), or from main.lua's locals that the love.* callbacks use, which is where many games keep their state
+  (`/@local/state/level/entities/7`; `game.context()["locals"]` names them). `game.name_of(path)` is the
+  last part (`7`). Things the game names itself (`autopilot.track(obj, class)`) or that only a physics body reaches
+  have paths of their own (`/@track/2`, `/@body/5`). A table met under several keys is named by its shortest path.
+  A module's own locals (`local enemies = {}` in enemies.lua) aren't reachable: read the code, and use what is found.
+- **Live things and data.** A thing with a life of its own (`hp`, `health`, `alive`, `state`, a velocity, a body)
+  is live; one without (a pickup, a door, but also a sprite's rectangle or a map's marker, data with an `x` and
+  a `y`) comes after the live ones in `game.all_actors()` and `game.actors(...)`, and in `game.view()` too, marked
+  `prop`. `game.view()` leaves out the members of big collections of data (hundreds of icon rectangles are nothing on
+  screen).
 - **Classes**: `game.actors("Enemy")` matches a thing's class as the game says it, case aside: what
   `autopilot.track` named, its class's name (middleclass's `obj.class.name`), a `type`/`kind`/`tag` field, its
   metatable's `__name`, or the table it is in (`enemies`, `enemy` for the members of `enemies`). A class nothing is
@@ -46,8 +52,9 @@
   first point, the mouse is in the middle of the window. A LÖVE game draws its own buttons: `game.ui()` is empty;
   find a button's place in the code (or its text in `game.screen()`) and click it.
 - **The screen**: `game.screen()` is the text the game drew last frame with `love.graphics.print` / `printf`, keyed by
-  where it landed on screen (`Text@10,10`: window pixels from the top left). Text drawn from a `Text` object or an
-  image isn't there.
+  where it landed on screen (`Text@10,10`: window pixels from the top left). Pieces drawn side by side on a line are
+  one text: a terminal-styled game that prints one glyph at a time reads as its words, and a shadow drawn under a
+  text isn't the text twice. Text drawn from a `Text` object or an image isn't there.
 - **The camera**: the view is the window, unless the game names its camera (`autopilot.camera(...)`) or has a global
   `camera`/`cam` with `x`, `y`: a hump.camera or gamera one is the middle of the view, another the top left
   (`love.graphics.translate(-camera.x, -camera.y)`); `scale` or `zoom` zooms it. `game.view` lists the things in
