@@ -57,6 +57,7 @@
   pick one (a field to set, a function to call: read the code).
 - **Findings** the module reports by itself: `log_error` (a Lua error in a callback: the game goes on from the next
   frame, as a debugger would let it), `hitch` (a frame over 0.75 s) and `nan` (the player's place).
-- **No pictures yet**: `record` and `capture` answer 409 (LÖVE 11 encodes no JPEG): read what the game holds instead.
+- **Pictures**: the game's window, as the player sees it (the recording, stills, `describe_frames`), as in the
+  other engines. A game without a window has none (`record` and `capture` answer 409).
 - **Time**: `game.request("timestep", {"fixed": True, "fps": 30})` makes every frame's dt 1/fps (`love.timer.step`);
   `fixed: False` puts it back. `pause` stops the game's `love.update` (drawing and the module go on).

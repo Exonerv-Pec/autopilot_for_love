@@ -165,12 +165,72 @@ def run(c, link, project):
     p = game.pointer(object="/bell")
     c.check("pointer at a thing", p.get("on_screen") is True and abs(p["x"] - 612) <= 1, str(p))
 
+    # pictures: PNGs from the game, JPEGs in the brain
+    pictures(c, game, link)
+
     # restart: the game starts over (LÖVE restarts in the same process) on the same session
     session = link.session
     game.restart()
     c.check("restart: the same session goes on", link.resumes == 1 and link.session == session, f"{link.resumes}")
     c.check("restart: the game started over", game.get("/", "score") == 0 and game.get("/player", "speed") == 180
             and game.loc("/player") == Vec(116, 0, -316), str(game.loc("/player")))
+
+
+def pixel(frame, x, y):
+    rgb = frame.reformat(format="rgb24").planes[0]
+    at = y * rgb.line_size + x * 3
+    return tuple(bytes(rgb)[at:at + 3])
+
+
+def pictures(c, game, link):
+    """`capture` and `record`: the game's picture as PNGs, which the brain's media keeps as JPEGs (a still, an MP4)."""
+    import av
+
+    from autopilot import media
+
+    c.check("hello says the game has a picture", media.can_capture(link), str(link.hello.get("features")))
+    started = time.monotonic()
+    shot = game.request("capture", {"max_dim": 640, "quality": 80}, timeout=15)
+    took = time.monotonic() - started
+    c.check("capture: a PNG, scaled to max_dim", "png" in shot and "jpeg" not in shot
+            and (shot.get("width"), shot.get("height")) == (640, 480), f"{shot.get('width')}x{shot.get('height')}")
+    jpeg = media.jpeg_of(shot, 80)
+    frames = av.CodecContext.create("mjpeg", "r").decode(av.Packet(jpeg)) if jpeg else []
+    c.check("capture: the brain makes it a JPEG", bool(frames) and (frames[-1].width, frames[-1].height) == (640, 480))
+    if frames:
+        ground = pixel(frames[-1], 320, 440)  # (the field: green, 0.3 0.6 0.3)
+        c.check("capture: it is the game's picture", ground[1] > ground[0] + 40 and ground[1] > ground[2] + 40,
+                str(ground))
+    c.check("capture: answered quickly", took < 2.0, f"{took:.2f} s")
+    folder = tempfile.mkdtemp(prefix="love_media_")
+    try:
+        rel = media.still(link, folder, "look")
+        c.check("a still saved as a JPEG", bool(rel) and open(os.path.join(folder, rel), "rb").read(2) == b"\xff\xd8",
+                str(rel))
+        frame_times = []
+        fps_before = game.request("ping")
+        with media.Recorder(link, folder) as rec:
+            rec.begin(1)
+            game.hold("Right")
+            for _ in range(10):
+                time.sleep(0.2)
+                frame_times.append(game.request("ping")["game_time"])
+            game.release("Right")
+            rec.end(1)
+        video = os.path.join(folder, "media", "recording-1.mp4")
+        c.check("record: an MP4 of the episode", os.path.exists(video) and rec.kept >= 6,
+                f"kept {rec.kept}, received {rec.received}, dropped {rec.dropped}, {rec.problem}")
+        if os.path.exists(video):
+            with av.open(video) as v:
+                decoded = list(v.decode(video=0))
+            c.check("record: the window's size (under max_dim 960)", (decoded[0].width, decoded[0].height) == (800, 600),
+                    f"{decoded[0].width}x{decoded[0].height}")
+        c.check("record: the game ran on while it recorded", frame_times[-1] - frame_times[0] > 1.0
+                and fps_before is not None, str(frame_times))
+        stats = game.request("record", {"action": "stop"})
+        c.check("record: stopped", stats.get("recording") is False)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def cli_run(c, port):

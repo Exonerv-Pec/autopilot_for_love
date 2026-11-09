@@ -12,8 +12,7 @@ It is plain Lua on what LÖVE ships (luasocket, LuaJIT's ffi and bit), with no o
 and is tested with LÖVE 11.5.
 
 **Status: a first version.** LÖVE has no editor, so there is no dock: runs start from the command line (below) or
-from the agent (`autopilot play "..."`, your own Claude Code or Codex through `autopilot mcp`). Pictures (`record`,
-`capture`) aren't sent yet: LÖVE 11 can't encode a JPEG, which the agent's recordings are.
+from the agent (`autopilot play "..."`, your own Claude Code or Codex through `autopilot mcp`).
 
 ## Install
 
@@ -103,7 +102,7 @@ The wire protocol is the same for every engine (`autopilot/bridge.py`). What is 
 | `ui`, `ui_act` | No controls (`ui` is empty, `ui_act` a 404): a LÖVE game draws its own. |
 | `pause` | The game's `love.update` isn't called (drawing and the module go on). |
 | `timestep` | `fixed`: every frame's dt is 1/`fps` (`love.timer.step`). |
-| `record`, `capture` | 409 for now (no JPEG encoder in LÖVE 11). |
+| `record`, `capture` | The window, as the player sees it (`love.graphics.captureScreenshot`). LÖVE 11 encodes no JPEG, so the pictures go as PNGs: `png` where other engines put `jpeg`, and the brain makes each a JPEG as it arrives. The main thread only asks for the frame; scaling to `max_dim` (a box filter), the PNG and its base64 are made in a thread of the module's own, and a frame due while the one before is still there is skipped (a gap in `n`). No frames while paused. A recording ends with its connection (a restart: the brain asks again). No window: 409. |
 | `codex_manifest`, `codex_read` | The game's `.lua` files and shaders (`.glsl`, `.frag`, `.vert`), from its folder or `.love`, not its save folder, not folders starting with `.`, not `autopilot/`. Paths follow the protocol's rules (relative, no `..`). |
 | events | `heartbeat` every second; `session` when the game (re)starts; `log` and a `log_error` finding for a Lua error in a callback (the frame is dropped and the game goes on, as an editor's debugger would let it), `hitch` (a frame over 0.75 s), `nan` (the player's place), while a run uses the game. |
 
@@ -127,15 +126,17 @@ with playtest arguments.
 | `autopilot/world.lua` | The things, the player and the camera; `find`, `transforms`, `pose`, `movement`, `view`, `watch`. |
 | `autopilot/rc.lua` | `rc`: reads, writes, calls and `describe`. |
 | `autopilot/codex.lua` | `codex_manifest`, `codex_read`, and the keys the game's code reads. |
+| `autopilot/media.lua` | `record` and `capture`: the frame from LÖVE, scaled and made a PNG in a thread of its own. |
 | `autopilot/keys.lua` | The agent's key names as LÖVE's. |
 
 ### Running the tests
 
 `tests/live.py` starts LÖVE on the test game, **Coin Field** (`tests/game/`: a square walking a field, coins, a
 patrolling slime, a bell with a planted bug, a HUD), against the brain's own bridge and kit: every op the brain needs,
-the things and the player, the HUD's text, keys and `move`, `rc`, the codex, the planted bug as a `log_error`, a
-restart on the same session, and command-line runs against a stand-in brain (the hello's run, the report files, exit
-codes 2 and 1). From the repository root, with the repository's Python environment:
+the things and the player, the HUD's text, keys and `move`, `rc`, the codex, the planted bug as a `log_error`, a still
+and a recording (PNGs from the game, a JPEG and an MP4 in the brain), a restart on the same session, and command-line
+runs against a stand-in brain (the hello's run, the report files, exit codes 2 and 1). From the repository root, with
+the repository's Python environment:
 
 ```
 python plugin/love/tests/live.py

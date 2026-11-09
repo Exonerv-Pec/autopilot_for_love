@@ -70,6 +70,7 @@ local keys = require("autopilot.keys")
 local world = require("autopilot.world")
 local rc = require("autopilot.rc")
 local codex = require("autopilot.codex")
+local media = require("autopilot.media")
 
 autopilot._world = world
 function world.track(obj, class, opts)
@@ -210,6 +211,10 @@ end
 
 local function send(frame)
   if S.link then S.link:send(json.encode(frame)) end
+end
+
+local function send_text(text)
+  if S.link then S.link:send(text) end
 end
 
 local function respond(id, result)
@@ -588,11 +593,14 @@ local OPS = {
     return true, {}
   end,
   detectors = function() return true, {} end,
-  record = function()
-    return false, "no picture: the LÖVE module doesn't send pictures yet (LÖVE 11 encodes no JPEG)", 409
+  record = function(_, a)
+    if a.action == "stop" then return media.stop() end
+    return media.start(a)
   end,
-  capture = function()
-    return false, "no picture: the LÖVE module doesn't send pictures yet (LÖVE 11 encodes no JPEG)", 409
+  capture = function(id, a)
+    local ok, err, status = media.capture(id, a, t_value(), now())
+    if ok == nil then return DEFERRED end
+    return ok, err, status
   end,
   codex_manifest = function() return true, codex.manifest(project_name()) end,
   codex_read = function(_, a) return true, codex.read(a.paths, a.max_bytes) end,
@@ -685,7 +693,7 @@ end
 local function hello()
   local h = {type = "hello", protocol = PROTOCOL, plugin_version = autopilot.version, engine = "love",
     engine_version = string.format("%d.%d.%d", love.getVersion()), project = project_name(), host = "game",
-    features = json.array({"timed_hold", "pointer"}),
+    features = json.array(media.available() and {"timed_hold", "pointer", "media"} or {"timed_hold", "pointer"}),
     share = flag(args.playtestshare, prefs.share_data ~= false), input = input_caps()}
   local research = args.playtestresearch
   if research then h.research = flag(research, true) elseif type(prefs.research_agent) == "boolean" then
@@ -753,6 +761,7 @@ local function poll_link(t)
       local welcomed = S.welcomed
       S.link, S.active, S.welcomed, S.run_active = nil, false, false, false
       release_all()
+      media.stop()  -- (a recording ends with its connection: the brain asks again on the next)
       if S.run_asked and not stay_open then
         return fail_run("the connection to the brain closed before the run's result")
       elseif has_run and m.was_connected and not welcomed and not stay_open then
@@ -830,6 +839,7 @@ local function frame(step)
       end
       if done then table.remove(S.pending, i) else i = i + 1 end
     end
+    media.tick(t, S.paused, t_value())
   end
   local real_update = love.update
   if S.paused then love.update = noop end
@@ -854,8 +864,12 @@ local function frame(step)
     S.heartbeat_at = t
     emit({kind = "heartbeat", t = t_value(), fps = love.timer.getFPS(), paused = S.paused})
   end
+  if S.active then media.collect(t, send_text, respond_error, t_value()) end
   flush_events()
   if S.link then S.link:flush() end  -- (sends what this frame answered)
+  -- LÖVE quits or restarts after this frame: the pictures' thread must be gone first (a thread still holding LÖVE's
+  -- modules fails the restart)
+  if result ~= nil then media.stop_worker() end
   return result
 end
 
